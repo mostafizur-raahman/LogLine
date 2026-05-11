@@ -7,19 +7,36 @@ import (
 	"net/http"
 )
 
+// helper
+func writeJSON(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	fmt.Fprint(w, body)
+}
+
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "ok")
+	writeJSON(w, http.StatusOK, `{"status": "ok"}`)
 }
 func handleIngest(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	ct := r.Header.Get("Content-type")
+	if ct != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, `{error : "content-type must be application/json}`)
 		return
 	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, `{"error": "failed to read request body"}`)
+		return
+	}
+
+	if len(body) == 0 {
+		writeJSON(w, http.StatusBadRequest, `{"error": "request body must not be empty"}`)
+		return
+	}
+
 	fmt.Println(string(body))
-	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, http.StatusCreated, `{"status": "accepted"}`)
 }
 func main() {
 	mux := http.NewServeMux()
