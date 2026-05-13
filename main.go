@@ -1,43 +1,32 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
-// helper
-func writeJSON(w http.ResponseWriter, status int, body string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	fmt.Fprint(w, body)
+const maxBodySize = 1_048_576 // 1 MB
+
+type LogEntry struct {
+	Level     string         `json:"level"`
+	Message   string         `json:"message"`
+	Service   string         `json:"service"`
+	Timestamp time.Time      `json:"timestamp"`
+	Data      map[string]any `json:"data,omitempty"`
 }
 
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, `{"status": "ok"}`)
+type errorResponse struct {
+	Error string `json:"error"`
 }
-func handleIngest(w http.ResponseWriter, r *http.Request) {
-	ct := r.Header.Get("Content-type")
-	if ct != "application/json" {
-		writeJSON(w, http.StatusUnsupportedMediaType, `{error : "content-type must be application/json}`)
-		return
-	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, `{"error": "failed to read request body"}`)
-		return
-	}
-
-	if len(body) == 0 {
-		writeJSON(w, http.StatusBadRequest, `{"error": "request body must not be empty"}`)
-		return
-	}
-
-	fmt.Println(string(body))
-	writeJSON(w, http.StatusCreated, `{"status": "accepted"}`)
+type statusResponse struct {
+	Status string `json:"status"`
 }
+
 func main() {
 	mux := http.NewServeMux()
 
@@ -48,4 +37,86 @@ func main() {
 
 	log.Printf("logline starting on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// helper
+func writeJSON(w http.ResponseWriter, status int, V any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(V)
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, statusResponse{
+		Status: "ok",
+	})
+}
+
+func handleIngest(w http.ResponseWriter, r *http.Request) {
+	ct := r.Header.Get("Content-type")
+	if ct != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{
+			Error: "content-type must be application/json",
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	var entry LogEntry
+
+	if err := decoder.Decode(&entry); err != nil {
+		var maxbytesErr *http.MaxBytesError
+		if errors.As(err, &maxbytesErr) {
+			writeJSON(w, http.StatusBadRequest, errorResponse{
+				Error: "request body too large",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusBadRequest, errorResponse{
+			Error: "invalid json" + err.Error(),
+		})
+		return
+	}
+
+	if msg := validateLogEntry(entry); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{
+			Error: msg,
+		})
+		return
+	}
+
+	fmt.Printf("received: level=%s service=%s message=%s\n", entry.Level, entry.Service, entry.Message)
+
+	writeJSON(w, http.StatusCreated, statusResponse{
+		Status: "accepted",
+	})
+
+}
+
+func validateLogEntry(entry LogEntry) string {
+	if entry.Level == "" {
+		return "level is required"
+	}
+	if entry.Message == "" {
+		return "message is required"
+	}
+	if entry.Service == "" {
+		return "service is required"
+	}
+	if entry.Timestamp.IsZero() {
+		return "timestamp is required"
+	}
+
+	switch entry.Level {
+	case "debug", "info", "warn", "error", "fatal":
+		// valid for a reason
+	default:
+		return "level must be one of: debug, info, warn, error, fatal"
+	}
+	return ""
 }
