@@ -1,16 +1,29 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"logline/internal/config"
 	"logline/internal/server"
-	"net/http"
+	"os"
 )
 
 func main() {
-	srv := server.New()
 
-	addr := ":4000"
+	cfg, err := config.LoadConfig()
 
-	log.Printf("loging starting on %s\n", addr)
-	log.Fatal(http.ListenAndServe(addr, srv))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+		os.Exit(1)
+	}
+
+	srv := server.New(cfg)
+
+	addr := fmt.Sprintf(":%d", cfg.Port)
+
+	log.Printf("loging starting on %s (env=%s, log-level=%s)", addr, cfg.Env, cfg.LogLevel)
+
+	if err := srv.Start(addr); err != nil {
+		log.Fatal(err)
+	}
 }
